@@ -8,7 +8,7 @@ import re
 import urllib.request
 
 PUSHPLUS_URL = "https://www.pushplus.plus/send"
-PUSHPLUS_MAX_CHARS = 19000  # Leave 1000 char margin for JSON overhead
+PUSHPLUS_MAX_CHARS = 19500  # PushPlus 2万字限制，留500余量给JSON开销
 
 
 # Minimal CSS fallback when full CSS is too large
@@ -131,19 +131,27 @@ def _truncate_html(html_content: str, max_chars: int = PUSHPLUS_MAX_CHARS) -> st
     if len(content) <= max_chars:
         return content
 
-    # Step 4: Last resort - truncate content body
-    # Find last complete day-block and cut after it
-    cutoff_marker = '</div>\n</div>\n</div>'
-    last_pos = content.rfind(cutoff_marker)
-    if last_pos > 0:
-        content = content[:last_pos + len(cutoff_marker)]
-        content += (
-            '\n<div style="text-align:center;padding:16px;color:#999;font-size:12px;">'
-            '... [内容过长已截断]</div>'
-            '\n<div class="footer">'
-        )
-        content += '🔬 Serenity Daily · 内容过长已截断<br>完整报告见 GitHub 仓库</div>'
-        print(f"  [push] Hard truncation: {len(content)} chars")
+    # Step 4: Last resort - aggressive hard truncation
+    # Find the last complete </div> before the character limit
+    # (uses rfind with end bound instead of fragile multi-line marker)
+    target = max_chars - 400  # reserve space for truncation notice
+    last_div = content.rfind('</div>', 0, target)
+    if last_div > 0:
+        content = content[:last_div + len('</div>')]
+    else:
+        # No good cut point found, just hard cut at target
+        content = content[:target]
+
+    truncation_notice = (
+        '<div style="text-align:center;padding:20px;color:#e67e22;font-size:13px;'
+        'background:#fff;border-radius:8px;margin:12px 0;">'
+        '⚠️ <b>内容过长已截断</b><br>完整报告请查看 '
+        '<a href="https://github.com/jiangsuxuwei110-cmd/twitter-monitor1">GitHub 仓库</a>'
+        '</div>'
+        '<div class="footer">🔬 Serenity · 内容过长已截断<br>完整报告见 GitHub 仓库</div>'
+    )
+    content += truncation_notice
+    print(f"  [push] Hard truncation: {len(content)} chars (cut at position {last_div})")
 
     return content
 
