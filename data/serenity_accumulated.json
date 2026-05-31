@@ -1,0 +1,23 @@
+{
+  "meta": {
+    "created": "",
+    "last_updated": "2026-05-31 13:29",
+    "total_runs": 0,
+    "first_date": "",
+    "last_date": ""
+  },
+  "stocks": {},
+  "thesis_changes": [],
+  "key_events": [],
+  "supply_chain": [],
+  "risk_alerts": [],
+  "performance": {
+    "directional_hits": 0,
+    "directional_total": 0,
+    "strict_hits": 0,
+    "strict_total": 0,
+    "cpo_verified": 0,
+    "cpo_total": 0
+  },
+  "daily_summaries": []
+}

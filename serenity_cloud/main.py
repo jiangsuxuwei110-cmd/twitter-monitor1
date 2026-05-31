@@ -3,14 +3,14 @@ Serenity Daily - Main Orchestrator (Cloud Version)
 Runs in GitHub Actions:
 1. Fetches today's tweets from RSS.app
 2. Calls DeepSeek AI to analyze with Serenity methodology
-3. Updates cumulative HTML report
-4. Pushes via PushPlus
-5. Commits state changes back to repo
+3. Updates accumulated data (for half-year stats)
+4. Updates cumulative HTML report (with dynamic half-year summary)
+5. Pushes via PushPlus
+6. Commits state changes back to repo
 """
 import json
 import os
 import sys
-import hashlib
 from datetime import datetime, timezone, timedelta
 
 # Add parent dir to path
@@ -20,6 +20,7 @@ from fetch_tweets import fetch_today_tweets
 from analyze import call_deepseek, build_analysis_prompt
 from build_report import update_report
 from push_report import push_report
+from accumulated import update_accumulated, get_half_year_summary, mark_shown
 
 # --- Config ---
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
@@ -66,33 +67,38 @@ def save_report(html: str):
         f.write(html)
 
 
+def push_if_report_exists(today_str: str):
+    """Fallback: update date badge and push existing report (no new analysis)."""
+    state = load_state()
+    report_html = load_report()
+    if report_html:
+        import re
+        report_html = re.sub(
+            r'<div class="date-badge">📅 [^<]*</div>',
+            f'<div class="date-badge">📅 更新于 {today_str}</div>',
+            report_html
+        )
+        save_report(report_html)
+        result = push_report(report_html, f"🔮 Serenity 每日分析 {today_str}", PUSHPLUS_TOKEN)
+        print(f"  Push result: {result}")
+    return
+
+
 def main():
     print("=" * 60)
     print("Serenity Daily Analysis - Cloud Version")
     print("=" * 60)
 
+    today_str = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+
     # Step 1: Fetch tweets
-    print("\n[1/5] Fetching today's tweets...")
+    print("\n[1/6] Fetching today's tweets...")
     tweets = fetch_today_tweets()
     print(f"  Fetched {len(tweets)} tweets")
 
     if not tweets:
         print("  No tweets today, skipping analysis.")
-        # Still push a "no tweets" notification
-        today_str = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
-        state = load_state()
-        report_html = load_report()
-        # Update date and push
-        if report_html:
-            import re
-            report_html = re.sub(
-                r'<div class="date-badge">📅 [^<]*</div>',
-                f'<div class="date-badge">📅 更新于 {today_str}</div>',
-                report_html
-            )
-            save_report(report_html)
-            result = push_report(report_html, f"🔬 Serenity 每日分析 {today_str}", PUSHPLUS_TOKEN)
-            print(f"  Push result: {result}")
+        push_if_report_exists(today_str)
         return
 
     # Step 2: Load state and filter new tweets
@@ -102,22 +108,11 @@ def main():
 
     if not new_tweets:
         print("  All tweets already analyzed, skipping.")
-        today_str = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
-        report_html = load_report()
-        if report_html:
-            import re
-            report_html = re.sub(
-                r'<div class="date-badge">📅 [^<]*</div>',
-                f'<div class="date-badge">📅 更新于 {today_str}</div>',
-                report_html
-            )
-            save_report(report_html)
-            result = push_report(report_html, f"🔬 Serenity 每日分析 {today_str}", PUSHPLUS_TOKEN)
-            print(f"  Push result: {result}")
+        push_if_report_exists(today_str)
         return
 
     # Step 3: AI Analysis
-    print("\n[2/5] Calling DeepSeek AI for analysis...")
+    print("\n[2/6] Calling DeepSeek AI for analysis...")
     if not DEEPSEEK_API_KEY:
         print("  ERROR: DEEPSEEK_API_KEY not set!")
         print("  Please add it as a GitHub Secret: Settings > Secrets > DEEPSEEK_API_KEY")
@@ -131,17 +126,21 @@ def main():
         print(f"  ERROR calling DeepSeek API: {e}")
         sys.exit(1)
 
-    # Step 4: Update HTML Report
-    print("\n[3/5] Updating HTML report...")
-    today_str = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+    # Step 4: Update accumulated data (for half-year stats)
+    print("\n[3/6] Updating accumulated data...")
+    changes = update_accumulated(analysis, today_str)
+    accu_summary = get_half_year_summary()
+    print(f"  New stocks: {changes['new_stocks']}")
+    print(f"  Conviction changes: {changes['conviction_changes']}")
+    print(f"  New thesis: {changes['new_thesis']}")
 
-    # Update state
+    # Step 5: Update HTML Report (with dynamic half-year summary)
+    print("\n[4/6] Updating HTML report...")
     for t in new_tweets:
-        state["analyzed_ids"].append(t["id"])
+        if t["id"] not in state["analyzed_ids"]:
+            state["analyzed_ids"].append(t["id"])
     state["total_days"] += 1
     state["total_tweets"] += len(new_tweets)
-
-    # Track unique stocks
     for s in analysis.get("stocks", []):
         ticker = s.get("ticker", "")
         if ticker and ticker not in state["all_stocks"]:
@@ -150,26 +149,29 @@ def main():
     existing_report = load_report()
     updated_report = update_report(
         existing_report, today_str, analysis,
-        state["total_days"], state["total_tweets"],
-        len(new_tweets), len(state["all_stocks"])
+        accu_summary, changes,       # <-- dynamic data + changes highlighting
     )
     save_report(updated_report)
     save_state(state)
-    print(f"  Report updated: {state['total_days']} days, {state['total_tweets']} tweets, {len(state['all_stocks'])} stocks")
+    print(f"  Report updated.")
 
-    # Step 5: Push via PushPlus
-    print("\n[4/5] Pushing to PushPlus...")
+    # Step 6: Push via PushPlus
+    print("\n[5/6] Pushing to PushPlus...")
     try:
-        result = push_report(updated_report, f"🔬 Serenity 每日分析 {today_str}", PUSHPLUS_TOKEN)
+        result = push_report(updated_report, f"🔮 Serenity 每日分析 {today_str}", PUSHPLUS_TOKEN)
         print(f"  Push result: {result}")
         if result.get("code") == 200:
             print("  Push SUCCESS!")
+            # Mark all "new" flags as shown
+            from accumulated import load_accumulated, mark_shown
+            data = load_accumulated()
+            mark_shown(data)
         else:
             print(f"  Push may have failed: {result}")
     except Exception as e:
         print(f"  ERROR pushing: {e}")
 
-    print("\n[5/5] Done!")
+    print("\n[6/6] Done!")
     print("=" * 60)
 
 
