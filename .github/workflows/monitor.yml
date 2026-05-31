@@ -36,8 +36,7 @@ jobs:
 
       - name: Run monitor
         env:
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          PUSHPLUS_TOKEN_DEFAULT: "3d9d364039ab432ead44d9725e456f7a"
+          PUSHPLUS_TOKEN: "3d9d364039ab432ead44d9725e456f7a"
           TWITTER_TARGET_USER: "aleabitoreddit"
         run: python src/main.py
 
