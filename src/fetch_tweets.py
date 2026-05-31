@@ -1,9 +1,9 @@
 """
-Twitter/X 推文抓取模块 v3
-- 使用 Twitter 公开 Guest Token + GraphQL API（不需要登录/API Key）
-- 图片链接自动转换 pbs.twimg.com → pic.x.com  
-- 评论抓取
-- 多层降级：GraphQL → Syndication API → Nitter 实例
+Twitter/X 推文抓取模块 v4 (2026-05-31 验证通过)
+- Twitter Guest Token + GraphQL API（无需登录/API Key）
+- 图片链接自动转换 pbs.twimg.com → pic.x.com
+- 评论抓取（通过 Syndication API）
+- 多层降级：GraphQL → Nitter RSS
 """
 
 import json
@@ -18,21 +18,32 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# ── 配置 ──────────────────────────────────────────────
 TARGET_USER = os.environ.get("TWITTER_TARGET_USER", "aleabitoreddit")
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
     "Accept": "application/json",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# Twitter API 端点
-GUEST_TOKEN_URL = "https://api.twitter.com/1.1/guest/activate.json"
-GRAPHQL_URL = "https://twitter.com/i/api/graphql"
+BEARER_TOKEN = (
+    "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
+    "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+)
 
-# Nitter 实例列表（作为降级方案）
+# ── Query IDs（2026-05 验证有效） ──────────────────────
+QUERY_USER_BY_SCREEN_NAME = "7mjxD3-C6BxitPMVQ6w0-Q"
+QUERY_USER_TWEETS = "LNhjy8t3XpIrBYM-ms7sPQ"
+
+GRAPHQL_BASE = "https://twitter.com/i/api/graphql"
+GUEST_TOKEN_URL = "https://api.twitter.com/1.1/guest/activate.json"
+SYNDICATION_TWEET_URL = "https://cdn.syndication.twimg.com/tweet-result"
+
+# Nitter 降级实例
 NITTER_INSTANCES = [
     "https://nitter.poast.org",
     "https://nitter.tiekoetter.com",
@@ -44,103 +55,101 @@ NITTER_INSTANCES = [
     "https://xcancel.com",
 ]
 
-# Syndication API
-SYNDICATION_TWEET_URL = "https://cdn.syndication.twimg.com/tweet-result"
-
-# 缓存 Guest Token
+# Guest Token 缓存
 _guest_token: Optional[str] = None
 _guest_token_time: float = 0
-GUEST_TOKEN_TTL = 3600  # 1 小时
+GUEST_TOKEN_TTL = 3600
 
 
 def convert_image_url(url: str) -> str:
-    """将 pbs.twimg.com 转为 pic.x.com"""
     if not url:
         return ""
     return url.replace("pbs.twimg.com", "pic.x.com")
 
 
 def format_tweet_text(text: str) -> str:
-    """清理推文文本"""
     if not text:
         return ""
     text = re.sub(r"\s*https://t\.co/\w+\s*$", "", text)
     return text.strip()
 
 
+# ── Guest Token ────────────────────────────────────────
+
 def _get_guest_token() -> str:
-    """获取 Twitter Guest Token（缓存 1 小时）"""
     global _guest_token, _guest_token_time
     now = time.time()
     if _guest_token and (now - _guest_token_time) < GUEST_TOKEN_TTL:
         return _guest_token
-
     try:
-        headers = {**HEADERS, "Authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"}
-        resp = requests.post(GUEST_TOKEN_URL, headers=headers, timeout=15)
+        h = {**HEADERS, "Authorization": BEARER_TOKEN}
+        resp = requests.post(GUEST_TOKEN_URL, headers=h, timeout=15)
         if resp.status_code == 200:
-            data = resp.json()
-            _guest_token = data.get("guest_token", "")
+            _guest_token = resp.json().get("guest_token", "")
             _guest_token_time = now
-            logger.info("获取 Guest Token 成功")
+            logger.info("Guest Token 获取成功")
             return _guest_token
-        logger.warning("Guest Token 请求失败: %s", resp.status_code)
+        logger.warning("Guest Token 失败: %d", resp.status_code)
     except Exception as e:
-        logger.warning("Guest Token 请求异常: %s", e)
-
+        logger.warning("Guest Token 异常: %s", e)
     return ""
 
 
+def _make_session() -> requests.Session:
+    token = _get_guest_token()
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    s.headers["Authorization"] = BEARER_TOKEN
+    if token:
+        s.headers["x-guest-token"] = token
+    return s
+
+
+# ── GraphQL 抓取 ───────────────────────────────────────
+
 def _get_user_id(session: requests.Session) -> Optional[str]:
-    """通过 screen_name 获取用户 ID"""
+    """通过 screen_name 获取用户 rest_id"""
     try:
-        variables = json.dumps({"screen_name": TARGET_USER, "withSafetyModeUserFields": True})
-        features = json.dumps({"hidden_profile_likes_enabled": True, "highlights_tweets_tab_ui_enabled": True})
-
+        variables = json.dumps({
+            "screen_name": TARGET_USER,
+            "withSafetyModeUserFields": True,
+            "withSuperFollowsUserFields": True,
+        })
+        features = json.dumps({
+            "hidden_profile_likes_enabled": True,
+            "highlights_tweets_tab_ui_enabled": True,
+            "creator_subscriptions_tweet_preview_api_enabled": True,
+        })
         params = {"variables": variables, "features": features}
-
-        url = f"{GRAPHQL_URL}/PrmbUoHTyOJeDKGyniHE_A/UserByScreenName"
+        url = f"{GRAPHQL_BASE}/{QUERY_USER_BY_SCREEN_NAME}/UserByScreenName"
         resp = session.get(url, params=params, timeout=20)
 
         if resp.status_code == 200:
             data = resp.json()
             result = data.get("data", {}).get("user", {}).get("result", {})
-            user_id = result.get("rest_id")
-            if user_id:
-                logger.info("获取用户 ID: %s → %s", TARGET_USER, user_id)
-                return user_id
-
-            # 备用：从 legacy 获取
-            legacy = result.get("legacy", {})
-            if legacy:
-                user_id = legacy.get("id_str")
-                if user_id:
-                    return user_id
-
-        logger.warning("获取用户 ID 失败: status=%d", resp.status_code)
+            uid = result.get("rest_id")
+            if not uid:
+                uid = result.get("legacy", {}).get("id_str")
+            if uid:
+                logger.info("用户 ID: %s → %s", TARGET_USER, uid)
+                return uid
+        logger.warning("获取用户 ID 失败: %d", resp.status_code)
     except Exception as e:
         logger.warning("获取用户 ID 异常: %s", e)
-
     return None
 
 
 def _parse_tweet_entry(entry: dict) -> Optional[dict]:
-    """解析单个 Timeline Entry，提取推文信息"""
+    """解析 Timeline Entry → 推文字典"""
     try:
         content = entry.get("content", {})
-        entry_type = content.get("entryType", "")
-
-        if entry_type != "TimelineTimelineItem":
+        if content.get("entryType") != "TimelineTimelineItem":
             return None
-
         item_content = content.get("itemContent", {})
-        item_type = item_content.get("itemType", "")
-
-        if item_type != "TimelineTweet":
+        if item_content.get("itemType") != "TimelineTweet":
             return None
 
         tweet_result = item_content.get("tweet_results", {}).get("result", {})
-        # 有时推文嵌套在 "tweet" 字段里
         if "tweet" in tweet_result:
             tweet_result = tweet_result["tweet"]
         if "core" not in tweet_result:
@@ -151,8 +160,8 @@ def _parse_tweet_entry(entry: dict) -> Optional[dict]:
         user_results = core.get("user_results", {}).get("result", {})
         user_legacy = user_results.get("legacy", {})
 
-        tweet_id = legacy.get("id_str", "")
-        if not tweet_id:
+        tid = legacy.get("id_str", "")
+        if not tid:
             return None
 
         text = format_tweet_text(legacy.get("full_text", ""))
@@ -171,25 +180,24 @@ def _parse_tweet_entry(entry: dict) -> Optional[dict]:
                         "height": media.get("original_info", {}).get("height", 0),
                     })
 
-        # 扩展的媒体（含视频缩略图）
+        # 扩展媒体（视频缩略图）
         video_info = None
-        extended_media = legacy.get("extended_entities", {}).get("media", [])
-        for media in extended_media:
+        for media in legacy.get("extended_entities", {}).get("media", []):
             if media.get("type") in ("video", "animated_gif"):
-                thumb = media.get("media_url_https", "")
-                video_info = {"poster": convert_image_url(thumb), "duration": 0}
+                thumb = convert_image_url(media.get("media_url_https", ""))
+                video_info = {"poster": thumb}
                 break
 
         # 外部链接
         urls = []
-        for url_entity in entities.get("urls", []):
+        for ue in entities.get("urls", []):
             urls.append({
-                "display_url": url_entity.get("display_url", ""),
-                "expanded_url": url_entity.get("expanded_url", ""),
+                "display_url": ue.get("display_url", ""),
+                "expanded_url": ue.get("expanded_url", ""),
             })
 
         return {
-            "id": tweet_id,
+            "id": tid,
             "text": text,
             "images": images,
             "video": video_info,
@@ -197,38 +205,29 @@ def _parse_tweet_entry(entry: dict) -> Optional[dict]:
             "user": {
                 "name": user_legacy.get("name", TARGET_USER),
                 "screen_name": user_legacy.get("screen_name", TARGET_USER),
-                "avatar": convert_image_url(user_legacy.get("profile_image_url_https", "")),
+                "avatar": convert_image_url(
+                    user_legacy.get("profile_image_url_https", "")
+                ),
             },
             "urls": urls,
-            "tweet_url": f"https://twitter.com/{TARGET_USER}/status/{tweet_id}",
+            "tweet_url": f"https://twitter.com/{TARGET_USER}/status/{tid}",
         }
     except Exception as e:
-        logger.debug("解析推文条目失败: %s", e)
+        logger.debug("解析条目异常: %s", e)
         return None
 
 
 def fetch_tweets_via_graphql(last_id: Optional[str] = None) -> list[dict]:
-    """
-    通过 Twitter GraphQL API 获取用户最新推文
-    使用 Guest Token（无需登录）
-    """
-    token = _get_guest_token()
-    if not token:
-        logger.error("无法获取 Guest Token")
+    """通过 Twitter GraphQL API 抓取用户时间线"""
+    session = _make_session()
+    if not session.headers.get("x-guest-token"):
+        logger.error("无 Guest Token，GraphQL 不可用")
         return []
 
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    session.headers["x-guest-token"] = token
-    session.headers["Authorization"] = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
-
-    # 获取用户 ID
     user_id = _get_user_id(session)
     if not user_id:
-        logger.error("无法获取用户 ID")
         return []
 
-    # 获取时间线
     try:
         variables = json.dumps({
             "userId": user_id,
@@ -237,7 +236,16 @@ def fetch_tweets_via_graphql(last_id: Optional[str] = None) -> list[dict]:
             "withQuickPromoteEligibilityTweetFields": True,
             "withVoice": True,
             "withV2Timeline": True,
+            "withDownvotePerspective": False,
+            "withReactionsMetadata": False,
+            "withReactionsPerspective": False,
+            "withSuperFollowsTweetFields": True,
+            "withSuperFollowsUserFields": True,
+            "withCommunityTweetFields": True,
+            "withBirdwatchPivots": False,
+            "withReplaysMetadata": False,
         })
+
         features = json.dumps({
             "profile_label_improvements_pcf_label_in_post_enabled": True,
             "rweb_tipjar_consumption_enabled": True,
@@ -245,52 +253,35 @@ def fetch_tweets_via_graphql(last_id: Optional[str] = None) -> list[dict]:
             "verified_phone_label_enabled": False,
             "creator_subscriptions_tweet_preview_api_enabled": True,
             "responsive_web_graphql_timeline_navigation_enabled": True,
-            "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
-            "premium_content_api_read_enabled": False,
-            "communities_web_enable_tweet_community_results_fetch": True,
-            "c9s_tweet_anatomy_moderator_badge_enabled": True,
-            "responsive_web_grok_analyze_button_fetch_trends_enabled": False,
-            "responsive_web_grok_analyze_post_followups_enabled": True,
-            "responsive_web_jetfuel_frame": False,
-            "responsive_web_grok_share_attachment_enabled": True,
-            "articles_preview_enabled": True,
-            "responsive_web_edit_tweet_api_enabled": True,
-            "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
-            "view_counts_everywhere_api_enabled": True,
             "longform_notetweets_consumption_enabled": True,
             "responsive_web_twitter_article_tweet_consumption_enabled": True,
-            "tweet_awards_web_tipping_enabled": False,
-            "responsive_web_grok_show_grok_translated_post": False,
-            "responsive_web_grok_analysis_button_from_backend": True,
-            "creator_subscriptions_quote_tweet_preview_enabled": False,
-            "freedom_of_speech_not_reach_fetch_enabled": True,
-            "standardized_nudges_misinfo": True,
             "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
             "longform_notetweets_inline_media_enabled": True,
-            "responsive_web_media_download_video_enabled": False,
-            "responsive_web_grok_image_annotation_enabled": True,
-            "responsive_web_grok_show_grok_convos_with_shared_tweets": False,
-            "rweb_video_timestamps_enabled": True,
             "responsive_web_enhance_cards_enabled": False,
         })
 
         params = {"variables": variables, "features": features}
-        url = f"{GRAPHQL_URL}/VVKBXxIUo7GsUCoCctf2kQ/UserTweets"
-
+        url = f"{GRAPHQL_BASE}/{QUERY_USER_TWEETS}/UserTweets"
         resp = session.get(url, params=params, timeout=30)
 
         if resp.status_code != 200:
-            logger.error("GraphQL 时间线请求失败: %d", resp.status_code)
+            logger.error("GraphQL 时间线失败: %d", resp.status_code)
             return []
 
         data = resp.json()
     except Exception as e:
-        logger.error("GraphQL 时间线请求异常: %s", e)
+        logger.error("GraphQL 时间线异常: %s", e)
         return []
 
-    # 解析推文
-    instructions = data.get("data", {}).get("user", {}).get("result", {}).get("timeline_v2", {}).get("timeline", {}).get("instructions", [])
-    
+    instructions = (
+        data.get("data", {})
+        .get("user", {})
+        .get("result", {})
+        .get("timeline_v2", {})
+        .get("timeline", {})
+        .get("instructions", [])
+    )
+
     tweets = []
     for instruction in instructions:
         if instruction.get("type") != "TimelineAddEntries":
@@ -304,15 +295,21 @@ def fetch_tweets_via_graphql(last_id: Optional[str] = None) -> list[dict]:
             tweets.append(tweet_data)
             if len(tweets) >= 20:
                 break
+        if len(tweets) >= 20:
+            break
 
     return tweets
 
 
+# ── Syndication API（详情补充）─────────────────────────
+
 def fetch_tweet_detail_via_syndication(tweet_id: str) -> Optional[dict]:
-    """通过 Syndication API 获取单条推文详情（用于补充信息）"""
+    """通过 Syndication API 获取单条推文详情"""
     try:
         params = {"id": tweet_id, "lang": "en"}
-        resp = requests.get(SYNDICATION_TWEET_URL, params=params, headers=HEADERS, timeout=15)
+        resp = requests.get(
+            SYNDICATION_TWEET_URL, params=params, headers=HEADERS, timeout=15
+        )
         if resp.status_code != 200:
             return None
 
@@ -344,12 +341,14 @@ def fetch_tweet_detail_via_syndication(tweet_id: str) -> Optional[dict]:
             "tweet_url": f"https://twitter.com/{TARGET_USER}/status/{tweet_id}",
         }
     except Exception as e:
-        logger.debug("Syndication API 获取 %s 失败: %s", tweet_id, e)
+        logger.debug("Syndication %s 失败: %s", tweet_id, e)
         return None
 
 
+# ── Nitter RSS（降级）──────────────────────────────────
+
 def fetch_tweets_via_nitter_rss() -> list[dict]:
-    """通过 Nitter 实例 RSS 获取推文列表（降级方案）"""
+    """Nitter RSS 降级方案"""
     import xml.etree.ElementTree as ET
 
     for base_url in NITTER_INSTANCES:
@@ -359,56 +358,105 @@ def fetch_tweets_via_nitter_rss() -> list[dict]:
             resp = requests.get(rss_url, headers=HEADERS, timeout=15)
             if resp.status_code != 200 or not resp.text.strip():
                 continue
-
-            # 检查是否是 RSS
             if "<rss" not in resp.text.lower() and "<feed" not in resp.text.lower():
                 continue
 
             root = ET.fromstring(resp.text)
             tweets = []
-            items = root.findall(".//item") or root.findall(".//{http://www.w3.org/2005/Atom}entry")
+            ns_atom = "{http://www.w3.org/2005/Atom}"
+            items = root.findall(".//item") or root.findall(f".//{ns_atom}entry")
 
             for item in items:
                 link = item.findtext("link") or ""
-                if hasattr(item, 'find'):
-                    atom_link = item.find("{http://www.w3.org/2005/Atom}link")
-                    if atom_link is not None:
-                        link = atom_link.get("href", link)
+                atom_link = item.find(f"{ns_atom}link")
+                if atom_link is not None:
+                    link = atom_link.get("href", link)
 
                 match = re.search(r"/status/(\d+)", link)
                 if not match:
-                    # 尝试从 guid 中提取
-                    guid = item.findtext("guid") or item.findtext("{http://www.w3.org/2005/Atom}id", "")
+                    guid = item.findtext("guid") or item.findtext(f"{ns_atom}id", "")
                     match = re.search(r"(\d{15,})", guid)
-
                 if not match:
                     continue
 
-                tweet_id = match.group(1)
-                title = item.findtext("title") or item.findtext("{http://www.w3.org/2005/Atom}title", "")
-                pub_date = item.findtext("pubDate") or item.findtext("{http://www.w3.org/2005/Atom}published", "")
+                tid = match.group(1)
+                title = item.findtext("title") or item.findtext(f"{ns_atom}title", "")
+                pub_date = item.findtext("pubDate") or item.findtext(f"{ns_atom}published", "")
 
                 tweets.append({
-                    "id": tweet_id,
+                    "id": tid,
                     "title": re.sub(r"^[^:]+:\s*", "", title or ""),
                     "link": link,
                     "pub_date": pub_date,
                 })
 
             if tweets:
-                logger.info("Nitter RSS 获取 %d 条推文: %s", len(tweets), rss_url)
+                logger.info("Nitter RSS 获取 %d 条: %s", len(tweets), rss_url)
                 return tweets
         except Exception as e:
             logger.debug("Nitter %s 失败: %s", rss_url, e)
-
     return []
 
 
-def enrich_and_filter_tweets(raw_tweets: list[dict], last_id: Optional[str] = None) -> list[dict]:
+# ── 评论抓取 ──────────────────────────────────────────
+
+def fetch_comments(tweet_id: str) -> list[dict]:
+    """抓取推文评论（Syndication API）"""
+    try:
+        params = {"id": tweet_id, "lang": "en", "conversation": "true"}
+        resp = requests.get(
+            SYNDICATION_TWEET_URL, params=params, headers=HEADERS, timeout=15
+        )
+        if resp.status_code != 200:
+            return []
+
+        data = resp.json()
+        comments = []
+        for thread in data.get("conversationThreads", []):
+            for ct in thread.get("tweets", []):
+                if ct.get("id_str") == tweet_id:
+                    continue
+                author = ct.get("user", {}).get("name", "")
+                text = format_tweet_text(ct.get("text", ""))
+                if author and text:
+                    comments.append({"author": author, "content": text})
+                if len(comments) >= 10:
+                    break
+            if len(comments) >= 10:
+                break
+
+        if comments:
+            logger.info("获取 %d 条评论", len(comments))
+        return comments
+    except Exception as e:
+        logger.debug("评论抓取失败: %s", e)
+        return []
+
+
+# ── 主入口 ────────────────────────────────────────────
+
+def fetch_new_tweets(last_id: Optional[str] = None) -> list[dict]:
     """
-    用 Syndication API 丰富推文信息，并过滤出新推文
+    主入口：获取新推文
+    策略：GraphQL（主）→ Nitter RSS（降级）
     """
-    new_tweets = []
+    raw_tweets = []
+
+    # 第 1 层：GraphQL
+    logger.info("第 1 层: Twitter GraphQL API")
+    raw_tweets = fetch_tweets_via_graphql(last_id)
+
+    # 第 2 层：Nitter RSS
+    if not raw_tweets:
+        logger.info("第 2 层: Nitter RSS")
+        raw_tweets = fetch_tweets_via_nitter_rss()
+
+    if not raw_tweets:
+        logger.error("所有数据源均不可用")
+        return []
+
+    # 过滤 & 丰富
+    tweets = []
     for tweet in raw_tweets:
         tid = tweet.get("id", "")
         if tid == last_id:
@@ -416,83 +464,24 @@ def enrich_and_filter_tweets(raw_tweets: list[dict], last_id: Optional[str] = No
 
         detail = fetch_tweet_detail_via_syndication(tid)
         if detail:
-            new_tweets.append(detail)
+            tweets.append(detail)
         else:
-            # 构造基础结构
-            new_tweets.append({
+            tweets.append({
                 "id": tid,
                 "text": tweet.get("title", tweet.get("text", "")),
-                "images": [],
-                "video": None,
+                "images": tweet.get("images", []),
+                "video": tweet.get("video"),
                 "created_at": tweet.get("pub_date", tweet.get("created_at", "")),
-                "user": {"name": TARGET_USER, "screen_name": TARGET_USER, "avatar": ""},
-                "urls": [],
+                "user": tweet.get("user", {
+                    "name": TARGET_USER,
+                    "screen_name": TARGET_USER,
+                    "avatar": ""}),
+                "urls": tweet.get("urls", []),
                 "tweet_url": tweet.get("link", tweet.get("tweet_url", "")),
             })
 
     if last_id is None:
-        new_tweets = new_tweets[:5]
-
-    return new_tweets
-
-
-def fetch_comments(tweet_id: str) -> list[dict]:
-    """抓取推文评论（尝试多种方式）"""
-    # 方式1: Syndication API 带 conversation
-    try:
-        params = {"id": tweet_id, "lang": "en", "conversation": "true"}
-        resp = requests.get(SYNDICATION_TWEET_URL, params=params, headers=HEADERS, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            conv_threads = data.get("conversationThreads", [])
-            comments = []
-            for thread in conv_threads:
-                for conv_tweet in thread.get("tweets", []):
-                    # 跳过原推文本身
-                    if conv_tweet.get("id_str") == tweet_id:
-                        continue
-                    author = conv_tweet.get("user", {}).get("name", "")
-                    text = format_tweet_text(conv_tweet.get("text", ""))
-                    if author and text:
-                        comments.append({"author": author, "content": text})
-                    if len(comments) >= 10:
-                        break
-            if comments:
-                logger.info("获取 %d 条评论 (syndication)", len(comments))
-                return comments
-    except Exception as e:
-        logger.debug("Syndication 评论获取失败: %s", e)
-
-    return []
-
-
-def fetch_new_tweets(last_id: Optional[str] = None) -> list[dict]:
-    """
-    主入口：获取新推文
-    三层降级：GraphQL → Nitter RSS → 空
-    """
-    raw_tweets = []
-
-    # 第 1 层：GraphQL API
-    logger.info("第 1 层尝试: Twitter GraphQL API")
-    raw_tweets = fetch_tweets_via_graphql(last_id)
-
-    # 第 2 层：Nitter RSS
-    if not raw_tweets:
-        logger.info("第 2 层尝试: Nitter RSS")
-        nitter_tweets = fetch_tweets_via_nitter_rss()
-        raw_tweets = nitter_tweets
-
-    if not raw_tweets:
-        logger.error("所有数据源均不可用")
-        return []
-
-    # 丰富 & 过滤
-    tweets = enrich_and_filter_tweets(raw_tweets, last_id)
-
-    if not tweets:
-        logger.info("没有发现新推文")
-        return []
+        tweets = tweets[:5]
 
     # 获取评论
     for tweet in tweets:
