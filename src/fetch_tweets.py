@@ -1,332 +1,237 @@
 """
-Twitter/X 推文抓取模块
-- 多源 RSS 获取最新推文
-- Twitter Syndication API 获取推文详情
+Twitter/X 推文抓取模块 v2
+- 使用 twikit 库通过 Twitter 账号登录抓取（不需要 API Key）
+- Cookie 持久化，避免每次重新登录
 - 图片链接自动转换 pbs.twimg.com → pic.x.com
-- 评论抓取（尽力而为）
+- 评论抓取（获取推文回复）
 """
 
-import re
 import json
 import logging
-import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+import os
+import re
+import asyncio
 from typing import Optional
-
-import requests
-from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
 # ── 配置 ──────────────────────────────────────────────
-TARGET_USER = "aleabitoreddit"
+TARGET_USER = os.environ.get("TWITTER_TARGET_USER", "aleabitoreddit")
 
-# 多源 RSS 地址（按优先级）
-RSS_SOURCES = [
-    f"https://rsshub.app/twitter/user/{TARGET_USER}",
-    f"https://nitter.net/{TARGET_USER}/rss",
-    f"https://nitter.privacydev.net/{TARGET_USER}/rss",
-    f"https://nitter.poast.org/{TARGET_USER}/rss",
-    f"https://nitter.1d4.us/{TARGET_USER}/rss",
-]
+# Cookie 文件路径（GitHub Actions 中从环境变量注入）
+COOKIE_FILE = os.environ.get("COOKIE_FILE", "data/cookies.json")
 
-# Twitter Syndication API（获取推文详情）
-SYNDICATION_URL = "https://cdn.syndication.twimg.com/tweet-result"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/html, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-}
+# Twitter 账号（用于首次登录，之后用 Cookie）
+TWITTER_USERNAME = os.environ.get("TWITTER_USERNAME", "")
+TWITTER_EMAIL = os.environ.get("TWITTER_EMAIL", "")
+TWITTER_PASSWORD = os.environ.get("TWITTER_PASSWORD", "")
 
 
 def convert_image_url(url: str) -> str:
     """将 pbs.twimg.com 转为 pic.x.com，避免 PushPlus 拦截"""
+    if not url:
+        return url
     return url.replace("pbs.twimg.com", "pic.x.com")
 
 
-def _extract_tweet_id_from_url(url: str) -> Optional[str]:
-    """从推文 URL 中提取推文 ID"""
-    match = re.search(r"/status/(\d+)", url)
-    return match.group(1) if match else None
-
-
-def _extract_tweet_id_from_guid(guid: str) -> Optional[str]:
-    """从 RSS GUID 中提取推文 ID"""
-    match = re.search(r"(\d{15,})$", guid)
-    return match.group(1) if match else None
-
-
-def _parse_rss_feed(xml_content: str) -> list[dict]:
-    """解析 RSS/Atom XML，提取推文基本信息"""
-    tweets = []
-    try:
-        root = ET.fromstring(xml_content)
-
-        # RSS 2.0 格式
-        ns = {"atom": "http://www.w3.org/2005/Atom"}
-        items = root.findall(".//item") or root.findall(".//{http://www.w3.org/2005/Atom}entry")
-
-        for item in items:
-            title = (
-                item.findtext("title")
-                or item.findtext("{http://www.w3.org/2005/Atom}title", "")
-            )
-            link = (
-                item.findtext("link")
-                or item.findtext("{http://www.w3.org/2005/Atom}link", "")
-            )
-            description = (
-                item.findtext("description")
-                or item.findtext("{http://www.w3.org/2005/Atom}summary", "")
-                or item.findtext("{http://www.w3.org/2005/Atom}content", "")
-            )
-            pub_date = (
-                item.findtext("pubDate")
-                or item.findtext("{http://www.w3.org/2005/Atom}published", "")
-            )
-            guid = (
-                item.findtext("guid")
-                or item.findtext("{http://www.w3.org/2005/Atom}id", "")
-            )
-
-            # Atom link 可能是 href 属性
-            if not link or link.startswith("http"):
-                pass
-            else:
-                link_elem = item.find("{http://www.w3.org/2005/Atom}link")
-                if link_elem is not None:
-                    link = link_elem.get("href", link)
-
-            tweet_id = _extract_tweet_id_from_url(link) or _extract_tweet_id_from_guid(guid)
-            if not tweet_id:
-                continue
-
-            # 清理标题（移除可能有的用户名前缀）
-            clean_title = re.sub(r"^[^:]+:\s*", "", title) if title else ""
-
-            tweets.append(
-                {
-                    "id": tweet_id,
-                    "title": clean_title,
-                    "raw_description": description or "",
-                    "link": link,
-                    "pub_date": pub_date,
-                    "source": "rss",
-                }
-            )
-    except ET.ParseError as e:
-        logger.warning("XML 解析失败: %s", e)
-
-    return tweets
-
-
-def fetch_tweets_via_rss() -> list[dict]:
-    """通过多源 RSS 获取最新推文列表"""
-    for url in RSS_SOURCES:
-        try:
-            logger.info("尝试 RSS 源: %s", url)
-            resp = requests.get(url, headers=HEADERS, timeout=30)
-            if resp.status_code == 200 and resp.text.strip():
-                tweets = _parse_rss_feed(resp.text)
-                if tweets:
-                    logger.info("成功从 %s 获取 %d 条推文", url, len(tweets))
-                    return tweets
-            else:
-                logger.warning("RSS 源 %s 返回 %d", url, resp.status_code)
-        except Exception as e:
-            logger.warning("RSS 源 %s 请求失败: %s", url, e)
-
-    logger.error("所有 RSS 源均不可用")
-    return []
-
-
-def enrich_tweet_via_syndication(tweet_id: str) -> Optional[dict]:
-    """
-    通过 Twitter Syndication API 获取推文详细信息
-    返回包含 text, images, video, created_at, user 等字段的字典
-    """
-    try:
-        params = {"id": tweet_id, "lang": "en"}
-        resp = requests.get(SYNDICATION_URL, params=params, headers=HEADERS, timeout=20)
-
-        if resp.status_code != 200:
-            logger.warning("Syndication API 返回 %d for tweet %s", resp.status_code, tweet_id)
-            return None
-
-        data = resp.json()
-
-        # 提取文本
-        text = data.get("text", "")
-
-        # 提取图片
-        images = []
-        photos = data.get("photos", [])
-        for photo in photos:
-            img_url = photo.get("url", "")
-            if img_url:
-                images.append(
-                    {
-                        "original": img_url,
-                        "converted": convert_image_url(img_url),
-                        "width": photo.get("width", 0),
-                        "height": photo.get("height", 0),
-                    }
-                )
-
-        # 提取视频缩略图
-        video_info = None
-        if data.get("video"):
-            video_info = {
-                "poster": convert_image_url(data["video"].get("poster", "")),
-                "duration": data["video"].get("duration", 0),
-            }
-
-        # 提取时间
-        created_at = data.get("created_at", "")
-
-        # 用户信息
-        user = data.get("user", {})
-
-        # 提取外部链接
-        urls = []
-        entities = data.get("entities", {})
-        for url_entity in entities.get("urls", []):
-            urls.append(
-                {
-                    "display_url": url_entity.get("display_url", ""),
-                    "expanded_url": url_entity.get("expanded_url", ""),
-                }
-            )
-
-        return {
-            "id": tweet_id,
-            "text": text,
-            "images": images,
-            "video": video_info,
-            "created_at": created_at,
-            "user": {
-                "name": user.get("name", TARGET_USER),
-                "screen_name": user.get("screen_name", TARGET_USER),
-                "avatar": user.get("profile_image_url_https", ""),
-            },
-            "urls": urls,
-            "tweet_url": f"https://twitter.com/{TARGET_USER}/status/{tweet_id}",
-        }
-    except Exception as e:
-        logger.error("Syndication API 获取推文 %s 失败: %s", tweet_id, e)
-        return None
-
-
-def fetch_comments_via_nitter(tweet_id: str) -> list[dict]:
-    """
-    通过 Nitter 实例抓取推文评论/回复
-    注意：此方法依赖 Nitter 可用性，可能不稳定
-    """
-    comments = []
-    nitter_instances = [
-        f"https://nitter.net/{TARGET_USER}/status/{tweet_id}",
-        f"https://nitter.privacydev.net/{TARGET_USER}/status/{tweet_id}",
-    ]
-
-    for url in nitter_instances:
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=20)
-            if resp.status_code != 200:
-                continue
-
-            soup = BeautifulSoup(resp.text, "lxml")
-
-            # Nitter 评论区结构：.thread-line 之后的 .tweet-body
-            reply_items = soup.select(".reply .tweet-body, .thread .tweet-body")
-            if not reply_items:
-                # 备用选择器
-                reply_items = soup.select(".timeline-item .tweet-content")
-
-            for item in reply_items[:10]:  # 最多取 10 条评论
-                # 提取评论者
-                author_elem = item.select_one(".fullname, .username")
-                author = author_elem.get_text(strip=True) if author_elem else ""
-
-                # 提取评论文本
-                content_elem = item.select_one(".tweet-content, .tweet-text")
-                content = content_elem.get_text(strip=True) if content_elem else ""
-
-                if content and content != "•":
-                    comments.append({"author": author, "content": content})
-
-            if comments:
-                logger.info("从 Nitter 获取到 %d 条评论", len(comments))
-                break
-        except Exception as e:
-            logger.warning("Nitter 评论获取失败 (%s): %s", url, e)
-
-    return comments
-
-
 def format_tweet_text(text: str) -> str:
-    """格式化推文文本，处理 t.co 短链接"""
-    # 移除末尾的 t.co 短链接（如果有）
+    """格式化推文文本，移除末尾 t.co 短链接"""
+    if not text:
+        return ""
     text = re.sub(r"\s*https://t\.co/\w+\s*$", "", text)
     return text.strip()
 
 
-def fetch_new_tweets(last_id: Optional[str] = None) -> list[dict]:
-    """
-    主入口：获取新推文（自 last_id 以来的所有新推文）
-    返回：按时间正序排列的推文列表
-    """
-    # 1. 从 RSS 获取最新推文列表
-    rss_tweets = fetch_tweets_via_rss()
-    if not rss_tweets:
-        logger.error("无法获取推文列表")
+async def _get_client():
+    """获取 twikit 客户端（自动处理登录/Cookie）"""
+    from twikit import Client
+
+    client = Client("en-US")
+
+    # 检查是否有 cookie 文件
+    if os.path.exists(COOKIE_FILE):
+        try:
+            client.load_cookies(COOKIE_FILE)
+            logger.info("从文件加载 Cookie 成功")
+            return client
+        except Exception as e:
+            logger.warning("Cookie 加载失败，尝试重新登录: %s", e)
+
+    # 检查环境变量中的 Cookie（GitHub Actions Secret）
+    cookie_str = os.environ.get("TWITTER_COOKIES", "")
+    if cookie_str:
+        try:
+            cookies = json.loads(cookie_str)
+            # 写入临时文件
+            os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
+            with open(COOKIE_FILE, "w") as f:
+                json.dump(cookies, f)
+            client.load_cookies(COOKIE_FILE)
+            logger.info("从环境变量加载 Cookie 成功")
+            return client
+        except Exception as e:
+            logger.warning("环境变量 Cookie 解析失败: %s", e)
+
+    # 使用账号密码登录
+    if TWITTER_USERNAME and TWITTER_PASSWORD:
+        logger.info("使用账号密码登录 Twitter...")
+        await client.login(
+            auth_info_1=TWITTER_USERNAME,
+            auth_info_2=TWITTER_EMAIL if TWITTER_EMAIL else None,
+            password=TWITTER_PASSWORD,
+        )
+        # 保存 Cookie
+        os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
+        client.save_cookies(COOKIE_FILE)
+        logger.info("登录成功，Cookie 已保存")
+        return client
+
+    raise RuntimeError(
+        "无法获取 Twitter 客户端：请配置 TWITTER_COOKIES 或 TWITTER_USERNAME/TWITTER_PASSWORD 环境变量"
+    )
+
+
+async def _fetch_user_tweets(last_id: Optional[str] = None) -> list[dict]:
+    """使用 twikit 获取用户最新推文"""
+    client = await _get_client()
+
+    # 获取用户信息
+    user = await client.get_user_by_screen_name(TARGET_USER)
+    logger.info("获取用户 @%s (id=%s)", TARGET_USER, user.id)
+
+    # 获取最新推文（取 20 条，足够找到新内容）
+    tweets = await client.get_user_tweets(user.id, "Tweets", count=20)
+
+    result = []
+    for tweet in tweets:
+        tweet_id = tweet.id
+
+        # 如果遇到上次处理的推文 ID，停止
+        if tweet_id == last_id:
+            break
+
+        # 提取文本
+        text = format_tweet_text(tweet.text or "")
+
+        # 提取图片
+        images = []
+        if hasattr(tweet, "media") and tweet.media:
+            for media in tweet.media:
+                if hasattr(media, "type") and media.type == "photo":
+                    img_url = getattr(media, "media_url_https", "") or getattr(media, "url", "")
+                    if img_url:
+                        images.append(
+                            {
+                                "original": img_url,
+                                "converted": convert_image_url(img_url),
+                                "width": getattr(media, "width", 0),
+                                "height": getattr(media, "height", 0),
+                            }
+                        )
+
+        # 提取视频缩略图
+        video_info = None
+        if hasattr(tweet, "media") and tweet.media:
+            for media in tweet.media:
+                if hasattr(media, "type") and media.type in ("video", "animated_gif"):
+                    thumb = getattr(media, "media_url_https", "")
+                    video_info = {"poster": convert_image_url(thumb), "duration": 0}
+                    break
+
+        # 提取外部链接
+        urls = []
+        if hasattr(tweet, "urls") and tweet.urls:
+            for url_entity in tweet.urls:
+                urls.append(
+                    {
+                        "display_url": getattr(url_entity, "display_url", ""),
+                        "expanded_url": getattr(url_entity, "expanded_url", ""),
+                    }
+                )
+
+        # 用户信息
+        tweet_user = tweet.user
+        avatar_url = ""
+        if tweet_user:
+            avatar_url = convert_image_url(
+                getattr(tweet_user, "profile_image_url_https", "") or ""
+            )
+
+        result.append(
+            {
+                "id": tweet_id,
+                "text": text,
+                "images": images,
+                "video": video_info,
+                "created_at": str(tweet.created_at) if hasattr(tweet, "created_at") else "",
+                "user": {
+                    "name": tweet_user.name if tweet_user else TARGET_USER,
+                    "screen_name": tweet_user.screen_name if tweet_user else TARGET_USER,
+                    "avatar": avatar_url,
+                },
+                "urls": urls,
+                "tweet_url": f"https://twitter.com/{TARGET_USER}/status/{tweet_id}",
+            }
+        )
+
+    return result
+
+
+async def _fetch_tweet_comments(tweet_id: str) -> list[dict]:
+    """获取推文评论（回复）"""
+    try:
+        client = await _get_client()
+        # 获取推文详情和回复
+        tweet = await client.get_tweet_by_id(tweet_id)
+        if not tweet:
+            return []
+
+        comments = []
+        # 获取回复
+        if hasattr(tweet, "replies") and tweet.replies:
+            for reply in tweet.replies[:10]:
+                author = ""
+                if reply.user:
+                    author = reply.user.name or reply.user.screen_name or ""
+                content = format_tweet_text(reply.text or "")
+                if content:
+                    comments.append({"author": author, "content": content})
+
+        return comments
+    except Exception as e:
+        logger.warning("获取推文 %s 评论失败: %s", tweet_id, e)
         return []
 
-    # 2. 过滤出新推文（RSS 按时间倒序，最新的在前）
-    new_tweets = []
-    for tweet in rss_tweets:
-        if tweet["id"] == last_id:
-            break  # 碰到上次处理的最新推文，停止
-        new_tweets.append(tweet)
 
-    # 如果没有 last_id（首次运行），只取最新 5 条
-    if last_id is None:
-        new_tweets = rss_tweets[:5]
+def fetch_new_tweets(last_id: Optional[str] = None) -> list[dict]:
+    """
+    主入口：获取新推文（同步包装异步函数）
+    返回：按时间倒序的新推文列表（最新的在前）
+    """
+    try:
+        tweets = asyncio.run(_fetch_new_tweets_async(last_id))
+        return tweets
+    except Exception as e:
+        logger.error("fetch_new_tweets 失败: %s", e)
+        return []
 
-    if not new_tweets:
+
+async def _fetch_new_tweets_async(last_id: Optional[str] = None) -> list[dict]:
+    """异步获取新推文"""
+    # 1. 获取推文列表
+    tweets = await _fetch_user_tweets(last_id)
+
+    if not tweets:
         logger.info("没有发现新推文")
         return []
 
-    # 3. 用 Syndication API 丰富每条推文信息
-    enriched = []
-    for tweet in new_tweets:
-        detail = enrich_tweet_via_syndication(tweet["id"])
-        if detail:
-            detail["text"] = format_tweet_text(detail["text"])
-            # 如果 syndication 没拿到文本，用 RSS 的
-            if not detail["text"] and tweet.get("raw_description"):
-                soup = BeautifulSoup(tweet["raw_description"], "html.parser")
-                detail["text"] = format_tweet_text(soup.get_text(separator="\n"))
-            enriched.append(detail)
-        else:
-            # Syndication 失败，构造一个基础结构
-            enriched.append(
-                {
-                    "id": tweet["id"],
-                    "text": tweet.get("title", ""),
-                    "images": [],
-                    "video": None,
-                    "created_at": tweet.get("pub_date", ""),
-                    "user": {"name": TARGET_USER, "screen_name": TARGET_USER, "avatar": ""},
-                    "urls": [],
-                    "tweet_url": tweet.get("link", ""),
-                }
-            )
+    # 首次运行（无 last_id），最多取 5 条
+    if last_id is None:
+        tweets = tweets[:5]
 
-    # 4. 获取每条推文的评论
-    for tweet in enriched:
-        tweet["comments"] = fetch_comments_via_nitter(tweet["id"])
+    # 2. 获取评论
+    for tweet in tweets:
+        tweet["comments"] = await _fetch_tweet_comments(tweet["id"])
 
-    logger.info("成功获取 %d 条新推文（含评论）", len(enriched))
-    return enriched
+    logger.info("成功获取 %d 条新推文", len(tweets))
+    return tweets
