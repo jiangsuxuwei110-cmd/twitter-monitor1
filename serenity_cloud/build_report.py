@@ -3,6 +3,7 @@ Serenity Daily - HTML Report Builder (Cloud Version)
 Builds and updates the cumulative HTML report.
 Today's new entries are highlighted with orange (#ff6b35) styling.
 Half-year statistical summary is dynamically generated from accumulated data.
+New content is highlighted in red (#dc2626) for easy visual identification.
 """
 
 # --- CSS Styling ---
@@ -33,6 +34,16 @@ CSS = """
   .stat-num { font-size: 28px; font-weight: 800; color: #302b63; }
   .stat-card.highlight .stat-num { color: #ff6b35; }
   .stat-label { font-size: 12px; color: #888; margin-top: 4px; }
+
+  /* --- Today's Key Insights (RED highlight block) --- */
+  .today-insights {
+    background: #fef2f2; border-left: 4px solid #dc2626;
+    border-radius: 0 8px 8px 0; padding: 16px 18px; margin: 16px 24px;
+  }
+  .today-insights h3 { color: #dc2626; font-size: 14px; margin-bottom: 8px; }
+  .today-insights ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.9; color: #2c3e50; }
+  .today-insights li { margin-bottom: 4px; }
+  .today-insights .hl { color: #dc2626; font-weight: 600; }
 
   .content { padding: 16px 24px 32px; }
   .day-block {
@@ -101,6 +112,8 @@ CSS = """
     padding: 1px 8px; border-radius: 3px; font-size: 12px;
     font-weight: 600; margin-right: 6px;
   }
+  /* NEW: red font for new content inside insight blocks */
+  .insight .new-text { color: #dc2626; font-weight: 600; }
 
   .tweet-ref {
     background: #fefefe; border-left: 3px solid #ddd;
@@ -204,24 +217,35 @@ def build_ticker_tags(stocks: list[dict], changes: dict = None) -> str:
     return " ".join(tags)
 
 
-def build_stock_analysis(stocks: list[dict]) -> str:
-    """Build stock analysis insights HTML with detailed analysis."""
+def build_stock_analysis(stocks: list[dict], changes: dict = None) -> str:
+    """Build stock analysis insights HTML with detailed analysis.
+    New stocks are marked with red font."""
     if not stocks:
         return ""
+    new_tickers = set()
+    if changes:
+        new_tickers = set(changes.get("new_stocks", []))
+        for cc in changes.get("conviction_changes", []):
+            new_tickers.add(cc["ticker"])
+
     html_parts = []
     for s in stocks:
+        ticker = s.get("ticker", "")
         principles_str = "、".join([f"原则#{i}" for i in _principle_numbers(s.get("principles", []))])
         conv = s.get("conviction", 3)
         stars = "⭐" * min(conv, 5)
+        is_new = ticker.upper() in new_tickers
+        red_open = '<span class="new-text">' if is_new else ""
+        red_close = '</span>' if is_new else ""
         html_parts.append(f"""<div class="insight">
-      <span class="key-point">{s["ticker"]} {stars} — {principles_str}</span> {s["analysis"]}
+      <span class="key-point">{red_open}{ticker} {stars} — {principles_str}{red_close}</span> {s["analysis"]}
     </div>""")
     return "\n".join(html_parts)
 
 
 def build_insights(items: list[dict], label_class: str, new_titles: set = None) -> str:
     """Build insight divs for thesis_changes, key_events, supply_chain, risk_alerts.
-    If `new_titles` is provided, highlight new items with a flash badge."""
+    If `new_titles` is provided, highlight new items with red font."""
     if not items:
         return f'<div style="color:#999;font-size:14px;padding:8px 0;">今日该分类暂无新增内容</div>'
     if new_titles is None:
@@ -230,16 +254,19 @@ def build_insights(items: list[dict], label_class: str, new_titles: set = None) 
     for item in items:
         title = item.get("title", "")
         is_new = title in new_titles or item.get("is_new", False)
-        new_badge = ' <span class="hy-new-flash">NEW</span>' if is_new else ""
         if label_class == "risk":
-            html_parts.append(f'<div class="insight">⚠️ <strong>{title}</strong>{new_badge} — {item["description"]}</div>')
+            red = '<span class="new-text">' if is_new else ""
+            red_end = '</span>' if is_new else ""
+            html_parts.append(f'<div class="insight">⚠️ <strong>{red}{title}{red_end}</strong> — {item["description"]}</div>')
         else:
             prefix = "📌" if label_class == "events" else ("🔗" if label_class == "supply" else "")
             principles_str = ""
             if item.get("principles"):
                 principles_str = "（" + "、".join([f"原则#{i}" for i in _principle_numbers(item["principles"])]) + "）"
+            red = '<span class="new-text">' if is_new else ""
+            red_end = '</span>' if is_new else ""
             html_parts.append(f"""<div class="insight">
-      <span class="key-point">{prefix} {title}</span>{new_badge} {principles_str} {item["description"]}
+      <span class="key-point">{prefix} {red}{title}{red_end}</span> {principles_str} {item["description"]}
     </div>""")
     return "\n".join(html_parts)
 
@@ -277,13 +304,62 @@ def _principle_numbers(names: list[str]) -> list[int]:
     return sorted(nums) if nums else [0]
 
 
+def build_today_insights_block(analysis: dict, changes: dict) -> str:
+    """Build the red '今日关键洞察' block placed at the top of the report."""
+    summary = analysis.get("summary", "")
+    stocks = analysis.get("stocks", [])
+    new_stocks = changes.get("new_stocks", []) if changes else []
+    new_thesis = changes.get("new_thesis", []) if changes else []
+    new_events = changes.get("new_events", []) if changes else []
+    conviction_changes = changes.get("conviction_changes", []) if changes else []
+
+    bullets = []
+
+    # Bullet 1: Summary
+    if summary:
+        bullets.append(f'<li><span class="hl">今日概要：</span>{summary}</li>')
+
+    # Bullet 2: New stocks
+    for s in stocks:
+        t = s.get("ticker", "")
+        if t.upper() in [x.upper() for x in new_stocks]:
+            stance_cn = {"bullish": "看多", "bearish": "看空", "neutral": "中性"}.get(s.get("stance", ""), "")
+            stars = "⭐" * min(s.get("conviction", 3), 5)
+            bullets.append(f'<li><span class="hl">新增关注：{t} {stars} {stance_cn}</span> — {s.get("analysis", "")[:80]}...</li>')
+
+    # Bullet 3: Conviction changes
+    for cc in conviction_changes:
+        direction_arrow = "🔼" if cc.get("direction") == "up" else ("🔽" if cc.get("direction") == "down" else "➡️")
+        bullets.append(f'<li><span class="hl">信念变化：{cc["ticker"]} {direction_arrow} {cc.get("old","?")}→{cc.get("new","?")}⭐</span></li>')
+
+    # Bullet 4: New thesis
+    for t in new_thesis[:3]:
+        bullets.append(f'<li><span class="hl">新论点：</span>{t}</li>')
+
+    # Bullet 5: New events
+    for e in new_events[:3]:
+        bullets.append(f'<li><span class="hl">新事件：</span>{e}</li>')
+
+    if not bullets:
+        return ""
+
+    bullets_html = "\n".join(bullets)
+    return f"""<div class="today-insights">
+  <h3>🔴 今日关键洞察</h3>
+  <ul>
+{bullets_html}
+  </ul>
+</div>"""
+
+
 def build_day_block(date_str: str, analysis: dict, is_new: bool = True, changes: dict = None) -> str:
-    """Build a single day-block HTML with detailed summary and market context."""
+    """Build a single day-block HTML with detailed summary and market context.
+    New content within the block is marked with red font via CSS class 'new-text'."""
     new_class = " new" if is_new else ""
     badge = '\n    <span class="badge-new">NEW</span>' if is_new else ""
 
     stocks_html = build_ticker_tags(analysis.get("stocks", []), changes)
-    stock_analysis_html = build_stock_analysis(analysis.get("stocks", []))
+    stock_analysis_html = build_stock_analysis(analysis.get("stocks", []), changes)
 
     # Summary + Market Context
     summary = analysis.get("summary", "")
@@ -375,7 +451,6 @@ def build_half_year_section(accu_summary: dict, changes: dict) -> str:
         is_changed = ticker in changed_stock_set
         row_class = ""
         if is_changed:
-            # Determine up/down
             direction = next((cc["direction"] for cc in conviction_changes if cc["ticker"] == ticker), "")
             row_class = "conviction-up" if direction == "up" else ("conviction-down" if direction == "down" else "new-change")
         elif is_new:
@@ -383,7 +458,12 @@ def build_half_year_section(accu_summary: dict, changes: dict) -> str:
         stance_cn = {"bullish": "看多", "bearish": "看空", "neutral": "中性"}.get(s.get("stance", "neutral"), "?")
         stars = "⭐" * min(s.get("conviction", 3), 5)
         new_badge = ' <span class="hy-new-flash">NEW</span>' if is_new else ""
-        change_badge = f' <span class="hy-new-flash">{next((cc["old"] for cc in conviction_changes if cc["ticker"] == ticker), "")}→{next((cc["new"] for cc in conviction_changes if cc["ticker"] == ticker), "")}⭐</span>' if is_changed else ""
+        change_badge = ""
+        if is_changed:
+            direction = next((cc["direction"] for cc in conviction_changes if cc["ticker"] == ticker), "")
+            old_s = next((cc["old"] for cc in conviction_changes if cc["ticker"] == ticker), "")
+            new_s = next((cc["new"] for cc in conviction_changes if cc["ticker"] == ticker), "")
+            change_badge = f' <span class="hy-new-flash">{old_s}→{new_s}⭐</span>'
         top_stocks_rows += f"""<tr class="{row_class}">
       <td><strong>{ticker}</strong>{new_badge}{change_badge}</td>
       <td>{stars} {stance_cn}</td>
@@ -473,12 +553,13 @@ def update_report(existing_html: str, date_str: str, analysis: dict,
     - Removes 'new' class and badge from previous days
     - Updates stats in hero section
     - Rebuilds the half-year summary section dynamically
+    - Inserts today's key insights block (red highlight) at the top
     """
     import re
 
     # If existing is empty or placeholder, build from scratch
     if not existing_html or '<div class="hero">' not in existing_html:
-        return _build_full_report(date_str, analysis, accu_summary)
+        return _build_full_report(date_str, analysis, accu_summary, changes)
 
     # Remove 'new' class from all existing day-blocks
     html = existing_html
@@ -536,27 +617,53 @@ def update_report(existing_html: str, date_str: str, analysis: dict,
         # Insert before footer
         html = html.replace('<div class="footer">', half_year_html + '\n<div class="footer">')
 
+    # --- Insert or replace today-insights block ---
+    today_insights_html = build_today_insights_block(analysis, changes)
+    if 'today-insights' in html:
+        # Replace existing block
+        html = re.sub(
+            r'<div class="today-insights">.*?</div>\s*</div>',
+            today_insights_html,
+            html,
+            flags=re.DOTALL
+        )
+    else:
+        # Insert after stats block (before content)
+        html = html.replace('<div class="content">', today_insights_html + '\n<div class="content">')
+
     # Insert new day-block after the content div opening
     new_block = build_day_block(date_str, analysis, is_new=True, changes=changes)
+    # Remove existing new_block insertion if present
     insertion_marker = '<div class="content">'
     if insertion_marker in html:
-        html = html.replace(insertion_marker, insertion_marker + "\n" + new_block + "\n")
+        # Find where the first day-block is and replace it
+        # Actually, just insert after content div (today-insights already handled above)
+        pass  # day-block insertion handled below in _build_full_report path
+
+    # For update_report: insert new day-block at top of content (after today-insights)
+    # We need to find the right insertion point: after today-insights, before existing day-blocks
+    if today_insights_html:
+        # Insert after today-insights block
+        html = html.replace(
+            '</div>\n<div class="day-block"',
+            '</div>\n' + new_block + '\n<div class="day-block"',
+            1  # only first occurrence
+        )
     else:
-        # Fallback: insert before half-year section or footer
-        if 'half-year-section' in html:
-            html = html.replace('<div class="half-year-section">', new_block + '\n<div class="half-year-section">')
-        else:
-            html = html.replace('<div class="footer">', new_block + '\n<div class="footer">')
+        # Fallback: insert before first day-block
+        html = html.replace('<div class="day-block"', new_block + '\n<div class="day-block"', 1)
 
     return html
 
 
 def _build_full_report(date_str: str, analysis: dict, accu_summary: dict, changes: dict = None) -> str:
-    """Build complete HTML report from scratch, with dynamic half-year summary."""
+    """Build complete HTML report from scratch, with dynamic half-year summary.
+    Includes today's key insights block at the top (red highlight)."""
     if changes is None:
         changes = {}
     day_block = build_day_block(date_str, analysis, is_new=True, changes=changes)
     half_year_html = build_half_year_section(accu_summary, changes)
+    today_insights_html = build_today_insights_block(analysis, changes)
 
     # Stats from accu_summary
     meta = accu_summary.get("meta", {})
@@ -589,6 +696,7 @@ def _build_full_report(date_str: str, analysis: dict, accu_summary: dict, change
     <div class="stat-label">涉及股票</div>
   </div>
 </div>
+{today_insights_html}
 <div class="content">
 {day_block}
 </div>
@@ -660,6 +768,7 @@ if __name__ == "__main__":
     print(html[:500])
     print("\n...\n")
     assert 'half-year-section' in html, "Half-year section missing!"
-    assert 'HY-NEW-FLASH' in html.upper() or 'hy-new-flash' in html, "New flash badge missing!"
+    assert 'today-insights' in html, "Today insights block missing!"
+    assert 'new-text' in html, "New content red highlight missing!"
     print("[All tests passed]")
     print(f"Total HTML size: {len(html)} chars")
