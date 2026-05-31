@@ -1,0 +1,48 @@
+name: Serenity Half-Year Report
+
+on:
+  schedule:
+    # Daily at 19:05 Beijing time (11:05 UTC)
+    - cron: '5 11 * * *'
+  workflow_dispatch:  # Manual trigger for testing
+
+jobs:
+  build-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Debug environment
+        run: |
+          python --version
+          pip list | grep -i request
+          echo "PUSHPLUS_TOKEN set: $([ -n "$PUSHPLUS_TOKEN" ] && echo YES || echo NO)"
+          ls -la data/ 2>/dev/null || echo "data/ NOT FOUND"
+          ls -la serenity_half_year.html 2>/dev/null || echo "serenity_half_year.html NOT FOUND"
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+
+      - name: Build and push half-year report
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: python serenity_cloud/half_year_main.py
+
+      - name: Commit updated report
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add serenity_half_year.html
+          git diff --cached --quiet || git commit -m "chore: update half-year report [skip ci]"
+          git push
