@@ -23,6 +23,18 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
+      - name: Debug environment
+        run: |
+          python --version
+          pip list | grep -i request
+          echo "PUSHPLUS_TOKEN set: $([ -n \"$PUSHPLUS_TOKEN\" ] && echo YES || echo NO)"
+          echo "DEEPSEEK_API_KEY set: $([ -n \"$DEEPSEEK_API_KEY\" ] && echo YES || echo NO)"
+          ls -la data/
+          ls -la serenity_report.html 2>/dev/null || echo "serenity_report.html NOT FOUND"
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+
       - name: Run Serenity Daily Analysis
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}

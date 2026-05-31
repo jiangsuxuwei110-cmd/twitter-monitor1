@@ -4,10 +4,15 @@ Fetches today's tweets from RSS.app RSS feed.
 """
 import xml.etree.ElementTree as ET
 import re
+import sys
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
 
-import requests
+try:
+    import requests
+except ImportError:
+    print("ERROR: 'requests' module not found. Run: pip install requests")
+    sys.exit(1)
 
 # --- Config ---
 RSS_URL = "https://rss.app/feeds/Z4mTJrDi96qmVhYj.xml"

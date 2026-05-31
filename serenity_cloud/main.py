@@ -93,8 +93,16 @@ def main():
 
     # Step 1: Fetch tweets
     print("\n[1/6] Fetching today's tweets...")
-    tweets = fetch_today_tweets()
-    print(f"  Fetched {len(tweets)} tweets")
+    try:
+        tweets = fetch_today_tweets()
+        print(f"  Fetched {len(tweets)} tweets")
+    except Exception as e:
+        print(f"  ERROR fetching tweets: {e}")
+        import traceback
+        traceback.print_exc()
+        print("  Will try to push existing report instead.")
+        push_if_report_exists(today_str)
+        return
 
     if not tweets:
         print("  No tweets today, skipping analysis.")
