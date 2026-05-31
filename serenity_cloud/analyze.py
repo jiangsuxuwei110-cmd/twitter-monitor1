@@ -12,7 +12,7 @@ import urllib.request
 # --- Config ---
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 MODEL = "deepseek-chat"  # or "deepseek-reasoner" for deeper reasoning
-MAX_TOKENS = 4096
+MAX_TOKENS = 8192
 TEMPERATURE = 0.3  # Low temp for structured analysis
 
 
@@ -59,15 +59,36 @@ Apply his 12 core principles when analyzing:
 
 ---
 
-Analyze the tweets below. For each tweet, identify:
-- Which of the 12 principles it relates to
-- Specific stock tickers mentioned and their stance (bullish/bearish/neutral)
-- Supply chain connections or BOM insights
-- Key events (earnings, contracts, media coverage, conferences)
-- Any thesis changes or updates
-- Risk warnings
+Analyze the tweets below. This is a professional investment research task — be thorough and specific.
 
-Output a structured JSON analysis.
+For EACH stock mentioned:
+- Identify which of the 12 principles apply (list ALL that apply, not just one)
+- Determine stance (bullish/bearish/neutral) with conviction level (1-5 stars)
+- Write 3-5 sentence DETAILED analysis including:
+  * The specific supply chain position and competitive moat
+  * What catalyst or event is driving the thesis
+  * Specific price targets, valuation metrics, or timeline if mentioned
+  * How this connects to other stocks or broader themes
+  * Counter-arguments or risks Serenity acknowledges
+
+For thesis changes:
+- Explain what changed specifically and WHY (new data point, contract win, management comment, etc.)
+- How this affects conviction level (upgraded/downgraded)
+- Which stocks are impacted by this thesis change
+
+For supply chain insights:
+- Map the full BOM chain from end-customer → component → material → raw input
+- Identify which node is the bottleneck and why
+- Note any pricing power or monopoly dynamics
+
+For key events:
+- Provide full context: what happened, who's involved, timeline, market impact
+
+For risk alerts:
+- Be specific about the nature of risk (execution, geopolitical, dilution, competitive)
+- Note Serenity's own hedging language or caveats
+
+Output a structured JSON analysis with DETAILED, SPECIFIC content in every field.
 """
 
 
@@ -123,51 +144,54 @@ def build_analysis_prompt(tweets: list[dict]) -> str:
 Return EXACTLY this JSON structure (no extra fields, no markdown):
 
 {{
-  "summary": "1-2 sentence overview of today's major themes",
+  "summary": "3-4 sentence overview capturing today's major themes, market context, and the most important signal",
+  "market_context": "1-2 sentence macro backdrop: sector rotation, key index moves, relevant macro events impacting AI/semiconductor space today",
   "stocks": [
     {{
       "ticker": "$SYMBOL",
       "stance": "bullish|bearish|neutral",
-      "analysis": "1-2 sentence analysis applying which principle(s)",
-      "principles": ["PrincipleName"]
+      "conviction": 4,
+      "analysis": "3-5 sentence detailed analysis: supply chain position, catalyst, specific price targets/valuation if mentioned, connection to broader themes, acknowledged risks",
+      "principles": ["Principle1", "Principle2"]
     }}
   ],
   "thesis_changes": [
     {{
       "title": "Short title",
-      "description": "Detailed description of thesis change or update",
+      "description": "Detailed 3-4 sentence description: what changed, why, what specific new data triggered the change, how conviction is affected, which stocks are impacted",
       "principles": ["PrincipleName"]
     }}
   ],
   "key_events": [
     {{
       "title": "Event title",
-      "description": "Detailed description",
+      "description": "Detailed 3-4 sentence description: full context, who is involved, timeline, market impact, how Serenity interprets it",
       "principles": ["PrincipleName"]
     }}
   ],
   "supply_chain": [
     {{
       "title": "Supply chain insight",
-      "description": "Detailed BOM mapping or supply chain connection",
+      "description": "Detailed 3-5 sentence BOM mapping: full chain from end-customer → component → material, which node is the bottleneck, pricing power dynamics, monopoly considerations",
       "principles": ["PrincipleName"]
     }}
   ],
   "risk_alerts": [
     {{
       "title": "Risk title",
-      "description": "Risk description with Serenity framework context"
+      "description": "2-3 sentence specific risk description: what type (execution/geopolitical/dilution/competitive), how serious, Serenity's own hedging language"
     }}
   ],
   "reference_tweets": [
     {{
       "time": "HH:MM Beijing time",
-      "summary": "Tweet summary (under 100 Chinese characters)"
+      "summary": "Tweet content summary in Chinese (50-150 characters)"
     }}
   ]
 }}
 
 For sections with no content, use empty arrays [].
-Reference tweets: pick 3-5 most representative tweets.
-All analysis text should be in Chinese.
+Reference tweets: pick 3-5 most representative tweets with detailed summaries.
+conviction: 1=speculative mention, 2=low conviction, 3=moderate, 4=high, 5=highest conviction with multi-data-source validation.
+All analysis text should be in Chinese, professional tone, with specific numbers and details wherever possible.
 """
