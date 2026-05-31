@@ -24,7 +24,7 @@ from pushplus import send_tweet_push
 
 # ── 配置 ──────────────────────────────────────────────
 TARGET_USER = "aleabitoreddit"
-PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "3d9d364039ab432ead44d9725e456f7a")
+PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN") or os.environ.get("PUSHPLUS_TOKEN_DEFAULT", "3d9d364039ab432ead44d9725e456f7a")
 
 # 状态文件路径（GitHub Actions 中为仓库根目录）
 STATE_DIR = Path(__file__).parent.parent / "data"

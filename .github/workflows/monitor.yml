@@ -31,33 +31,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore cookies file
-        env:
-          TWITTER_COOKIES: ${{ secrets.TWITTER_COOKIES }}
-        run: |
-          mkdir -p data
-          if [ -n "$TWITTER_COOKIES" ]; then
-            echo "$TWITTER_COOKIES" > data/cookies.json
-            echo "已从 Secret 恢复 Cookie"
-          else
-            echo "未找到 TWITTER_COOKIES，将使用账号密码登录"
-          fi
-
       - name: Run monitor
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          TWITTER_COOKIES: ${{ secrets.TWITTER_COOKIES }}
-          TWITTER_USERNAME: ${{ secrets.TWITTER_USERNAME }}
-          TWITTER_EMAIL: ${{ secrets.TWITTER_EMAIL }}
-          TWITTER_PASSWORD: ${{ secrets.TWITTER_PASSWORD }}
+          PUSHPLUS_TOKEN_DEFAULT: "3d9d364039ab432ead44d9725e456f7a"
           TWITTER_TARGET_USER: "aleabitoreddit"
-          COOKIE_FILE: "data/cookies.json"
         run: python src/main.py
 
       - name: Save last tweet ID
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/last_id.json data/cookies.json 2>/dev/null || true
+          git add data/last_id.json 2>/dev/null || true
           git diff --cached --quiet || git commit -m "chore: update state [skip ci]"
           git push
