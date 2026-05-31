@@ -283,21 +283,16 @@ def fetch_new_tweets(last_id: Optional[str] = None) -> list[dict]:
         logger.error("无法获取推文列表")
         return []
 
-    # 2. 过滤出新推文
+    # 2. 过滤出新推文（RSS 按时间倒序，最新的在前）
     new_tweets = []
-    found_last = last_id is None  # 如果没有 last_id，采集所有（最多 5 条）
-
     for tweet in rss_tweets:
-        if found_last:
-            new_tweets.append(tweet)
-            if len(new_tweets) >= 5:  # 最多处理 5 条新推文
-                break
         if tweet["id"] == last_id:
-            found_last = True
+            break  # 碰到上次处理的最新推文，停止
+        new_tweets.append(tweet)
 
-    # 如果没有 last_id 则只取最新的 5 条
+    # 如果没有 last_id（首次运行），只取最新 5 条
     if last_id is None:
-        new_tweets = new_tweets[:5]
+        new_tweets = rss_tweets[:5]
 
     if not new_tweets:
         logger.info("没有发现新推文")
