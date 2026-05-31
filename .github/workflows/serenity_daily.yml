@@ -2,8 +2,8 @@ name: Serenity Daily Analysis
 
 on:
   schedule:
-    # Daily at 19:00 Beijing time (11:00 UTC)
-    - cron: '0 11 * * *'
+    # Daily at 19:00/20:00/21:00 Beijing time (11:00/12:00/13:00 UTC)
+    - cron: '0 11,12,13 * * *'
   workflow_dispatch:  # Manual trigger for testing
 
 jobs:

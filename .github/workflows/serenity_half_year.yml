@@ -2,8 +2,8 @@ name: Serenity Half-Year Report
 
 on:
   schedule:
-    # Daily at 19:05 Beijing time (11:05 UTC)
-    - cron: '5 11 * * *'
+    # Daily at 19:05/20:05/21:05 Beijing time (11:05/12:05/13:05 UTC)
+    - cron: '5 11,12,13 * * *'
   workflow_dispatch:  # Manual trigger for testing
 
 jobs:
