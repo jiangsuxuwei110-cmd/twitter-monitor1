@@ -1,10 +1,10 @@
 {
   "meta": {
     "created": "",
-    "last_updated": "2026-05-31 13:29",
-    "total_runs": 0,
-    "first_date": "",
-    "last_date": ""
+    "last_updated": "2026-05-31 13:30",
+    "total_runs": 1,
+    "first_date": "2026-05-31",
+    "last_date": "2026-05-31"
   },
   "stocks": {},
   "thesis_changes": [],
@@ -19,5 +19,13 @@
     "cpo_verified": 0,
     "cpo_total": 0
   },
-  "daily_summaries": []
+  "daily_summaries": [
+    {
+      "date": "2026-05-31",
+      "summary": "今日Serenity聚焦光子学供应链，获新设计赢单",
+      "market_context": "纳指反弹1.2%，半导体板块强势",
+      "stock_count": 1,
+      "tweet_count": 1
+    }
+  ]
 }
