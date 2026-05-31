@@ -8,7 +8,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-PUSHPLUS_URL = "http://www.pushplus.plus/send"
+PUSHPLUS_URL = "https://www.pushplus.plus/send"
 
 
 def send_push(token: str, title: str, content: str, template: str = "html") -> bool:

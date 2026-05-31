@@ -5,7 +5,7 @@ Pushes the HTML report via PushPlus API.
 import json
 import urllib.request
 
-PUSHPLUS_URL = "http://www.pushplus.plus/send"
+PUSHPLUS_URL = "https://www.pushplus.plus/send"
 
 
 def push_report(html_content: str, title: str, token: str) -> dict:
