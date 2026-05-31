@@ -195,6 +195,22 @@ CSS = """
 """
 
 
+# PushPlus 2万字限制：关键文本块的长度上限
+TODAY_INSIGHTS_CHARS = 200    # 「今日关键洞察」中每条总结的最大字数
+STOCK_ANALYSIS_CHARS = 150    # 每只股票分析在洞察区块中的最大字数
+INSIGHT_DESC_CHARS = 120      # 论点/事件描述的最大字数
+
+
+DAY_SUMMARY_CHARS = 300       # day-block 概要的最长字数
+
+
+def _truncate_text(text: str, max_len: int) -> str:
+    """截断文本到 max_len 字符以内，超出部分用 ... 表示。"""
+    if len(text) <= max_len:
+        return text
+    return text[:max_len - 3].rstrip() + "..."
+
+
 def build_ticker_tags(stocks: list[dict], changes: dict = None) -> str:
     """Build ticker tag HTML from stocks list, with conviction stars.
     If `changes` is provided, highlight conviction changes."""
@@ -238,7 +254,7 @@ def build_stock_analysis(stocks: list[dict], changes: dict = None) -> str:
         red_open = '<span class="new-text">' if is_new else ""
         red_close = '</span>' if is_new else ""
         html_parts.append(f"""<div class="insight">
-      <span class="key-point">{red_open}{ticker} {stars} — {principles_str}{red_close}</span> {s["analysis"]}
+      <span class="key-point">{red_open}{ticker} {stars} — {principles_str}{red_close}</span> {_truncate_text(s["analysis"], STOCK_ANALYSIS_CHARS)}
     </div>""")
     return "\n".join(html_parts)
 
@@ -257,7 +273,7 @@ def build_insights(items: list[dict], label_class: str, new_titles: set = None) 
         if label_class == "risk":
             red = '<span class="new-text">' if is_new else ""
             red_end = '</span>' if is_new else ""
-            html_parts.append(f'<div class="insight">⚠️ <strong>{red}{title}{red_end}</strong> — {item["description"]}</div>')
+            html_parts.append(f'<div class="insight">⚠️ <strong>{red}{title}{red_end}</strong> — {_truncate_text(item["description"], INSIGHT_DESC_CHARS)}</div>')
         else:
             prefix = "📌" if label_class == "events" else ("🔗" if label_class == "supply" else "")
             principles_str = ""
@@ -266,7 +282,7 @@ def build_insights(items: list[dict], label_class: str, new_titles: set = None) 
             red = '<span class="new-text">' if is_new else ""
             red_end = '</span>' if is_new else ""
             html_parts.append(f"""<div class="insight">
-      <span class="key-point">{prefix} {red}{title}{red_end}</span> {principles_str} {item["description"]}
+      <span class="key-point">{prefix} {red}{title}{red_end}</span> {principles_str} {_truncate_text(item["description"], INSIGHT_DESC_CHARS)}
     </div>""")
     return "\n".join(html_parts)
 
@@ -315,9 +331,9 @@ def build_today_insights_block(analysis: dict, changes: dict) -> str:
 
     bullets = []
 
-    # Bullet 1: Summary
+    # Bullet 1: Summary (truncated for PushPlus limit)
     if summary:
-        bullets.append(f'<li><span class="hl">今日概要：</span>{summary}</li>')
+        bullets.append(f'<li><span class="hl">今日概要：</span>{_truncate_text(summary, TODAY_INSIGHTS_CHARS)}</li>')
 
     # Bullet 2: New stocks
     for s in stocks:
@@ -325,7 +341,7 @@ def build_today_insights_block(analysis: dict, changes: dict) -> str:
         if t.upper() in [x.upper() for x in new_stocks]:
             stance_cn = {"bullish": "看多", "bearish": "看空", "neutral": "中性"}.get(s.get("stance", ""), "")
             stars = "⭐" * min(s.get("conviction", 3), 5)
-            bullets.append(f'<li><span class="hl">新增关注：{t} {stars} {stance_cn}</span> — {s.get("analysis", "")[:80]}...</li>')
+            bullets.append(f'<li><span class="hl">新增关注：{t} {stars} {stance_cn}</span> — {_truncate_text(s.get("analysis", ""), STOCK_ANALYSIS_CHARS)}</li>')
 
     # Bullet 3: Conviction changes
     for cc in conviction_changes:
@@ -369,7 +385,7 @@ def build_day_block(date_str: str, analysis: dict, is_new: bool = True, changes:
     if summary:
         summary_block = f"""<div class="day-summary">
       <span class="summary-label">📝 今日概要</span>
-      {summary}
+      {_truncate_text(summary, DAY_SUMMARY_CHARS)}
     </div>"""
 
     market_block = ""
@@ -483,7 +499,7 @@ def build_half_year_section(accu_summary: dict, changes: dict) -> str:
         principles_str = ""
         if t.get("principles"):
             principles_str = "「" + "、".join([f"原则#{i}" for i in _principle_numbers(t["principles"])]) + "」"
-        thesis_html += f'<div class="insight"><span class="key-point">🔄 {title}</span>{new_badge} {principles_str} {t.get("description", "")}</div>\n'
+        thesis_html += f'<div class="insight"><span class="key-point">🔄 {title}</span>{new_badge} {principles_str} {_truncate_text(t.get("description", ""), INSIGHT_DESC_CHARS)}</div>\n'
 
     if not thesis_html:
         thesis_html = '<div style="color:#999;font-size:13px;">暂无论点变化记录</div>'
@@ -497,7 +513,7 @@ def build_half_year_section(accu_summary: dict, changes: dict) -> str:
         principles_str = ""
         if e.get("principles"):
             principles_str = "「" + "、".join([f"原则#{i}" for i in _principle_numbers(e["principles"])]) + "」"
-        events_html += f'<div class="insight"><span class="key-point">📋 {title}</span>{new_badge} {principles_str} {e.get("description", "")}</div>\n'
+        events_html += f'<div class="insight"><span class="key-point">📋 {title}</span>{new_badge} {principles_str} {_truncate_text(e.get("description", ""), INSIGHT_DESC_CHARS)}</div>\n'
 
     if not events_html:
         events_html = '<div style="color:#999;font-size:13px;">暂无关键事件记录</div>'

@@ -99,6 +99,31 @@ def _truncate_html(html_content: str, max_chars: int = PUSHPLUS_MAX_CHARS) -> st
     if len(content) <= max_chars:
         return content
 
+    # Step 2.5: Smart text compression — shorten long insight descriptions
+    # Find <div class="insight"> blocks and trim text beyond a reasonable length
+    def _shorten_insight_text(content: str, cap: int = 180) -> str:
+        """Shorten text inside insight divs that exceed `cap` chars."""
+        import re
+        def _trim(match):
+            full = match.group(0)
+            if len(full) <= cap + 50:
+                return full
+            # Keep the structure, shorten the body text after key-point span
+            return re.sub(
+                r'(</span>\s*)(.{' + str(cap) + r',}?)(</div>)',
+                lambda m: m.group(1) + m.group(2)[:cap-3].rstrip() + '...' + m.group(3),
+                full,
+                flags=re.DOTALL
+            )
+        # Process each insight block
+        return re.sub(r'<div class="insight">.*?</div>', _trim, content, flags=re.DOTALL)
+
+    content = _shorten_insight_text(content, cap=180)
+    print(f"  [push] Compressed insight text: {len(content)} chars")
+
+    if len(content) <= max_chars:
+        return content
+
     # Step 3: Replace full CSS with minimal version
     content = re.sub(r'<style>.*?</style>', MINIMAL_CSS, content, flags=re.DOTALL)
     print(f"  [push] Replaced with minimal CSS: {len(content)} chars")
