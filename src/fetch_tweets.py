@@ -1,12 +1,13 @@
 """
-Twitter/X 推文抓取模块 v5 (2026-05-31)
+Twitter/X 推文抓取模块 v6 (2026-05-31)
 - 数据源：RSS.app RSS Feed（免费、稳定、无需 Twitter API）
-- RSS.app URL 通过环境变量 RSS_URL 配置，默认使用已验证可用的 Feed
+- 图片：RSS <media:content> 标签 + Syndication API 双源
+- RSS.app URL 通过环境变量 RSS_URL 配置
 """
 
 import logging
 import re
-import time
+import os
 from typing import Optional
 from xml.etree import ElementTree as ET
 
@@ -14,8 +15,8 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# RSS.app Feed URL（可通过环境变量覆盖）
-RSS_URL = "https://rss.app/feeds/Z4mTJrDi96qmVhYj.xml"
+# RSS.app Feed URL
+RSS_URL = os.environ.get("RSS_URL", "https://rss.app/feeds/Z4mTJrDi96qmVhYj.xml")
 
 HEADERS = {
     "User-Agent": (
@@ -28,9 +29,19 @@ HEADERS = {
 # Twitter Syndication API（获取图片等详情，尽力而为）
 SYNDICATION_URL = "https://cdn.syndication.twimg.com/tweet-result"
 
+# RSS Media 命名空间
+NS = {"media": "http://search.yahoo.com/mrss/"}
 
-def _fetch_tweet_detail(tweet_id: str) -> dict:
-    """通过 Syndication API 获取单条推文详情（图片等）"""
+
+def _convert_image(url: str) -> str:
+    """将 pbs.twimg.com 转换为 pic.x.com（中国可访问）"""
+    if not url:
+        return ""
+    return url.replace("pbs.twimg.com", "pic.x.com")
+
+
+def _fetch_syndication_images(tweet_id: str) -> list[dict]:
+    """通过 Syndication API 获取推文图片（尽力而为）"""
     try:
         resp = requests.get(
             SYNDICATION_URL,
@@ -39,17 +50,37 @@ def _fetch_tweet_detail(tweet_id: str) -> dict:
             timeout=10,
         )
         if resp.status_code == 200:
-            return resp.json()
+            data = resp.json()
+            images = []
+            for photo in data.get("photos", []):
+                url = photo.get("url", "")
+                if url:
+                    images.append({
+                        "original": url,
+                        "converted": _convert_image(url),
+                        "width": photo.get("width", 0),
+                        "height": photo.get("height", 0),
+                    })
+            return images
     except Exception:
         pass
-    return {}
+    return []
 
 
-def _convert_image(url: str) -> str:
-    """将 pbs.twimg.com 转换为 pic.x.com"""
-    if not url:
-        return ""
-    return url.replace("pbs.twimg.com", "pic.x.com")
+def _extract_rss_images(item) -> list[dict]:
+    """从 RSS <media:content> 标签提取图片"""
+    images = []
+    for mc in item.findall("media:content", NS):
+        medium = mc.get("medium", "")
+        url = mc.get("url", "")
+        if medium == "image" and url:
+            images.append({
+                "original": url,
+                "converted": _convert_image(url),
+                "width": int(mc.get("width", 0)),
+                "height": int(mc.get("height", 0)),
+            })
+    return images
 
 
 def fetch_via_rss_app(last_id: Optional[str] = None) -> list[dict]:
@@ -66,7 +97,6 @@ def fetch_via_rss_app(last_id: Optional[str] = None) -> list[dict]:
         root = ET.fromstring(resp.content)
         tweets = []
 
-        # RSS 2.0: <item> 在 <channel> 下
         for item in root.findall(".//item"):
             # 提取推文 ID
             link = item.findtext("link", "").strip()
@@ -81,23 +111,21 @@ def fetch_via_rss_app(last_id: Optional[str] = None) -> list[dict]:
 
             # 提取正文（去除 CDATA 包装）
             title_raw = item.findtext("title", "") or ""
-            text = re.sub(r"^\s*<!\[CDATA\[(.*?)\]\]>\s*$", r"\1", title_raw, flags=re.DOTALL).strip()
+            text = re.sub(
+                r"^\s*<!\[CDATA\[(.*?)\]\]>\s*$",
+                r"\1", title_raw, flags=re.DOTALL
+            ).strip()
 
+            # 提取发布时间
             pub_date = (item.findtext("pubDate", "") or "").strip()
 
-            # 尝试通过 Syndication API 获取图片（尽力而为，失败不影响）
-            images = []
-            detail = _fetch_tweet_detail(tid)
-            if detail:
-                for photo in detail.get("photos", []):
-                    url = photo.get("url", "")
-                    if url:
-                        images.append({
-                            "original": url,
-                            "converted": _convert_image(url),
-                            "width": photo.get("width", 0),
-                            "height": photo.get("height", 0),
-                        })
+            # ── 图片采集：RSS media:content 优先 ──
+            images = _extract_rss_images(item)
+
+            # 如果 RSS 没有图片，尝试 Syndication API
+            if not images:
+                logger.debug("RSS 无图片，尝试 Syndication API: %s", tid)
+                images = _fetch_syndication_images(tid)
 
             tweets.append({
                 "id": tid,
