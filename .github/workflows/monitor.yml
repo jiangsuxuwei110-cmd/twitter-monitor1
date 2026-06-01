@@ -2,7 +2,7 @@ name: Twitter Monitor
 
 on:
   schedule:
-    - cron: "0 * * * *"   # 每小时整点执行
+    - cron: "*/15 * * * *"   # 每15分钟执行（防GitHub调度中断）
   workflow_dispatch:        # 允许手动触发
 
 permissions:
